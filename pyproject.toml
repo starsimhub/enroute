@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enroute"
+dynamic = ["version"]
+requires-python = ">=3.10"
+license = "MIT"
+description = "Per-act, per-edge intervention framework for starsim/stisim sexual networks"
+dependencies = [
+    "starsim>=3.0",
+    "stisim>=1.4",
+    "sciris",
+    "numpy",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["enroute", "enroute.*", "enroute_examples", "enroute_examples.*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "enroute.version.__version__"}

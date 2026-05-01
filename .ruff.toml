@@ -1,0 +1,36 @@
+# Matches [FORMAT] max-line-length
+line-length = 200
+
+[lint]
+# Add "PL" (Pylint) and "N" (Naming) to default rules to enforce the design limits
+# and allow us to ignore specific naming conventions below.
+select = ["E", "F", "PL", "N", "RET", "BLE"]
+
+# Map of [MESSAGES CONTROL] disables:
+ignore = [
+    "C901",    # Complexity (handled by max-branches/statements below)
+    "E402",    # Allow imports not at top (C0413)
+    "E722",    # Allow bare except (W0702)
+    "E701",    # Allow multiple statements on one line (if)
+    "BLE001",  # Allow general exception (W0718)
+    "N",       # Ignore PEP8 naming to match disabled C0103 and custom regex
+    "PLR1711", # Allow useless return (R1711)
+    "RET505",  # Allow else after return (R1705)
+    "RET506",  # Allow else after raise (R1720)
+    "C4",      # Corresponds to R1735 (dict literal preferences)
+]
+
+# Matches [MISCELLANEOUS] notes
+task-tags = ["FIXME", "XXX", "TODO", "TEMP"]
+
+[lint.pylint]
+# Matches [DESIGN] constraints
+max-args = 20             # max-args
+max-branches = 15         # max-branches
+max-returns = 5           # max-returns
+max-statements = 200      # max-statements
+max-public-methods = 20   # max-public-methods
+max-locals = 20           # max-locals
+
+# Note: Ruff does not currently support `max-module-lines` or `max-parents`
+# in the same way Pylint does.
