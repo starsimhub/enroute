@@ -17,7 +17,25 @@ class EdgeNetwork(ss.SexualNetwork):
     def init_pre(self, sim):
         super().init_pre(sim)
         self._edge_intvs = []
+        self._nb_call_count = {}  # disease id → count within current timestep
+        self._nb_last_ti = {}     # disease id → last seen timestep
         return
+
+    def _get_direction(self, disease):
+        """Infer transmission direction from call order within a timestep.
+
+        Starsim calls net_beta() twice per (timestep, disease): first for
+        p1→p2 (direction 0), then p2→p1 (direction 1).  A per-disease
+        counter reset each timestep recovers this ordering.
+        """
+        key = id(disease)
+        ti = self.sim.ti
+        if self._nb_last_ti.get(key) != ti:
+            self._nb_call_count[key] = 0
+            self._nb_last_ti[key] = ti
+        direction = self._nb_call_count[key] % 2
+        self._nb_call_count[key] += 1
+        return direction
 
     def net_beta(self, disease_beta=None, uids=None, disease=None):
         if uids is None:
@@ -29,15 +47,17 @@ class EdgeNetwork(ss.SexualNetwork):
         if not edge_intvs:
             return self.edges.beta[uids] * (1 - (1 - disease_beta) ** acts)
 
+        direction = self._get_direction(disease)
+
         n_edges = len(acts)
         unprotected_frac = np.ones(n_edges, dtype=ss_float_)
         p_trans = np.ones(n_edges, dtype=ss_float_)
 
         for iv in edge_intvs:
-            uses = self.edges[iv.edge_col][uids]
+            uses = iv.get_edge_uses(direction, uids)
             rate = np.divide(uses, acts, out=np.zeros_like(uses, dtype=float), where=acts > 0)
             rate = np.clip(rate, 0, 1)  # guard against uses > acts from buggy subclasses
-            rr = iv.relative_risk(self, disease_beta, disease, uids)
+            rr = iv.relative_risk(self, disease_beta, disease, uids, direction=direction)
             unprotected_frac *= 1 - rate
             p_trans *= (1 - disease_beta * rr) ** (acts * rate)
 
@@ -51,16 +71,23 @@ class EdgeIntervention(ss.Intervention):
     Subclass contract:
         update_uses(network): Set self.edge_uses to integer protected-act counts per edge.
                               Must satisfy 0 <= edge_uses[i] <= network.edges.acts[i].
-        relative_risk(network, disease_beta, disease, uids):
+        relative_risk(network, disease_beta, disease, uids, direction):
                               Return a scalar or per-edge array of relative risk.
                               1.0 = no protection; 0.0 = full block.
+
+    Asymmetric interventions (e.g. doxy-PEP) set ``asymmetric=True`` and
+    populate separate ``edge_uses_p1`` / ``edge_uses_p2`` columns.
+    ``get_edge_uses(direction, uids)`` then returns the *target's* uses
+    for each transmission direction (direction 0 = p1→p2 → p2 is target).
+    Symmetric interventions ignore direction entirely.
 
     Multiple EdgeInterventions stack multiplicatively in EdgeNetwork.net_beta().
     """
 
-    def __init__(self, network=None, diseases=True, **kwargs):
+    def __init__(self, network=None, diseases=True, asymmetric=False, **kwargs):
         super().__init__(**kwargs)
         self.diseases = diseases
+        self.asymmetric = asymmetric
         self._network = network
         self.uses_dist = ss.bernoulli(p=0)  # Auto-discovered by ss.Dists for seeded RNG
         return
@@ -70,12 +97,49 @@ class EdgeIntervention(ss.Intervention):
         return f"{self.name}_uses"
 
     @property
+    def edge_col_p1(self):
+        return f"{self.name}_uses_p1"
+
+    @property
+    def edge_col_p2(self):
+        return f"{self.name}_uses_p2"
+
+    @property
     def edge_uses(self):
         return self._network.edges[self.edge_col]
 
     @edge_uses.setter
     def edge_uses(self, value):
         self._network.edges[self.edge_col] = value
+
+    @property
+    def edge_uses_p1(self):
+        return self._network.edges[self.edge_col_p1]
+
+    @edge_uses_p1.setter
+    def edge_uses_p1(self, value):
+        self._network.edges[self.edge_col_p1] = value
+
+    @property
+    def edge_uses_p2(self):
+        return self._network.edges[self.edge_col_p2]
+
+    @edge_uses_p2.setter
+    def edge_uses_p2(self, value):
+        self._network.edges[self.edge_col_p2] = value
+
+    def get_edge_uses(self, direction, uids):
+        """Return per-edge uses for a given transmission direction.
+
+        Symmetric interventions return the single ``edge_uses`` column.
+        Asymmetric interventions return the *target's* uses:
+            direction 0 (p1→p2): p2 is target → ``edge_uses_p2``
+            direction 1 (p2→p1): p1 is target → ``edge_uses_p1``
+        """
+        if not self.asymmetric:
+            return self.edge_uses[uids]
+        col = self.edge_col_p2 if direction == 0 else self.edge_col_p1
+        return self._network.edges[col][uids]
 
     def init_pre(self, sim):
         super().init_pre(sim)
@@ -100,9 +164,13 @@ class EdgeIntervention(ss.Intervention):
 
         self._network._edge_intvs.append(self)
         net = self._network
-        if self.edge_col not in net.meta:
-            net.meta[self.edge_col] = ss_int_
-            net.edges[self.edge_col] = np.empty((0,), dtype=ss_int_)
+        cols = [self.edge_col]
+        if self.asymmetric:
+            cols += [self.edge_col_p1, self.edge_col_p2]
+        for col in cols:
+            if col not in net.meta:
+                net.meta[col] = ss_int_
+                net.edges[col] = np.empty((0,), dtype=ss_int_)
         return
 
     def step(self):
@@ -113,7 +181,7 @@ class EdgeIntervention(ss.Intervention):
         """Set self.edge_uses to integer protected act counts per edge."""
         raise NotImplementedError(f"{type(self).__name__} must implement update_uses()")
 
-    def relative_risk(self, network, disease_beta, disease, uids=None):
+    def relative_risk(self, network, disease_beta, disease, uids=None, direction=None):
         """Return scalar or per-edge relative risk. 1.0 = no protection; 0.0 = full block."""
         raise NotImplementedError(f"{type(self).__name__} must implement relative_risk()")
 
@@ -170,7 +238,7 @@ class CondomUse(EdgeIntervention):
         self.edge_uses = uses
         return
 
-    def relative_risk(self, network, disease_beta, disease, uids=None):
+    def relative_risk(self, network, disease_beta, disease, uids=None, direction=None):
         if isinstance(self.eff, dict):
             disease_name = disease.name if hasattr(disease, "name") else str(disease)
             if disease_name not in self.eff:

@@ -518,5 +518,5 @@ class StructuredCondomUse(CondomUse):
         elif sc.isnumber(self.condom_data):
             net.edges.condoms[:] = self.condom_data
 
-    def relative_risk(self, network, disease_beta, disease, uids=None):
+    def relative_risk(self, network, disease_beta, disease, uids=None, direction=None):
         return 1 - disease.pars.eff_condom

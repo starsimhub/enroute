@@ -22,7 +22,7 @@ class NoopCU(StructuredCondomUse):
     def update_uses(self, network):
         return
 
-    def relative_risk(self, network, disease_beta, disease, uids=None):
+    def relative_risk(self, network, disease_beta, disease, uids=None, direction=None):
         return 1
 
 

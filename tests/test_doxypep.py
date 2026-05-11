@@ -445,6 +445,44 @@ def test_condom_stacking():
     return sim
 
 
+@sc.timer()
+def test_female_only_eligibility():
+    """With only one sex enrolled, edges still get doxypep protection via the enrolled partner."""
+    sim = make_sim(
+        enroll_prob=1.0,
+        prescribed_doses=10_000,
+        uptake=1.0,
+        eligibility=lambda sim: sim.people.female.uids,
+        refill_prob=0,
+        dur=3,
+    )
+    sim.run()
+
+    enr = sim.interventions.dpep_enrollment
+    net = sim.networks.structuredsexual
+
+    # Only females should be enrolled
+    enrolled_uids = enr.enrolled.uids
+    assert len(enrolled_uids) > 0, "Expected some enrolled agents"
+    assert sim.people.female[enrolled_uids].all(), "Only females should be enrolled"
+
+    # Non-eligible agents must never have received doses
+    non_eligible = (~sim.people.female).uids
+    assert np.all(enr.doses[non_eligible] == 0), "Non-eligible agents should have zero doses"
+
+    # Key regression: enrolled agents must have consumed doses.
+    # With refill_prob=0, each got exactly prescribed_doses at enrollment.
+    # Any consumption proves edge-level uses were positive.
+    total_initial = len(enrolled_uids) * 10_000
+    total_remaining = float(enr.doses[enrolled_uids].sum())
+    assert total_remaining < total_initial, (
+        f"Expected dose consumption from enrolled agents; "
+        f"initial={total_initial}, remaining={total_remaining}. "
+        f"Zero consumption indicates the bilateral-enrollment bug."
+    )
+    return sim
+
+
 if __name__ == "__main__":
     do_plot = True
     sc.options(interactive=do_plot)
@@ -467,5 +505,6 @@ if __name__ == "__main__":
     test_relative_risk_unknown_disease()
     test_uptake_dict_by_edge_type()
     test_condom_stacking()
+    test_female_only_eligibility()
 
     T.toc()

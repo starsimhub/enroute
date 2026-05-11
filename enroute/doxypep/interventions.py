@@ -148,8 +148,8 @@ class DoxyPEP(EdgeIntervention):
     Reads enrollment and dose state from a DoxyPEPEnrollment intervention.
     Operates on edges in an EdgeStructuredSexual network. Each timestep,
     computes unprotected acts per edge, draws Bernoulli uses at the given
-    uptake rate, deducts doses (two-pass: p1 then p2), and stores uses
-    in the edge column for net_beta().
+    uptake rate, deducts doses from whichever partner is enrolled (preferring
+    p1 if both are), and stores uses in the edge column for net_beta().
 
     Args:
         uptake:      Probability of taking doxy-PEP per unprotected act.
@@ -167,7 +167,7 @@ class DoxyPEP(EdgeIntervention):
         enrollment=None,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(asymmetric=True, **kwargs)
         self._enrollment_ref = enrollment
 
         if rel_risk is None:
@@ -210,6 +210,8 @@ class DoxyPEP(EdgeIntervention):
         Deduct doses for agents in a given edge column (p1 or p2),
         capping uses so no agent exceeds their available doses.
 
+        Caller must zero uses for agents without doses before calling.
+
         Args:
             network: The EdgeStructuredSexual network.
             uses:    Mutable array of per-edge uses (modified in-place).
@@ -221,9 +223,6 @@ class DoxyPEP(EdgeIntervention):
         enrollment = self._enrollment
         agents = network.edges[agent_col]
         has_doses = enrollment.doses[ss.uids(agents)] > 0
-
-        # Zero out uses for agents without doses
-        uses[~has_doses] = 0
 
         if not has_doses.any():
             return
@@ -266,7 +265,13 @@ class DoxyPEP(EdgeIntervention):
         return
 
     def update_uses(self, network):
-        """Compute per-edge doxy-PEP protected act counts."""
+        """Compute per-edge doxy-PEP protected act counts.
+
+        Each partner independently decides whether to take doxy-PEP on each
+        unprotected act (one Bernoulli draw per partner per act, executed as a
+        single RNG call).  Doses are deducted from each partner's own supply.
+        The edge is protected on any act where at least one partner took it.
+        """
         n_edges = len(network.edges.p1)
         if n_edges == 0:
             self.edge_uses = np.empty(0, dtype=ss_int_)
@@ -274,39 +279,53 @@ class DoxyPEP(EdgeIntervention):
 
         acts = network.edges.acts
 
-        # Subtract acts already protected by prior edge interventions on this network
         prior_uses = np.zeros_like(acts)
         for iv in network._edge_intvs:
             if iv is not self and iv.edge_col in network.meta:
                 prior_uses += network.edges[iv.edge_col]
         unprotected = np.maximum(acts - prior_uses, 0)
 
-        # Get per-edge uptake
         uptake_prob = self._get_uptake_per_edge(network)
 
-        # Draw uses via per-act Bernoulli expansion (same pattern as CondomUse)
-        # Only process edges with unprotected > 0 to avoid reduceat OOB
+        # Independent per-partner Bernoulli draws in a single RNG call
         unprotected_int = unprotected.astype(ss_int_)
         total_acts = int(unprotected_int.sum())
-        uses = np.zeros(n_edges, dtype=ss_int_)
+        uses_p1 = np.zeros(n_edges, dtype=ss_int_)
+        uses_p2 = np.zeros(n_edges, dtype=ss_int_)
+
         if total_acts > 0:
             has_acts = unprotected_int > 0
             sub_acts = unprotected_int[has_acts]
             sub_prob = uptake_prob[has_acts]
             per_act_prob = np.repeat(sub_prob, sub_acts)
-            self.uses_dist.set(p=per_act_prob)
-            draws = self.uses_dist.rvs(int(sub_acts.sum()))
+
+            doubled_prob = np.concatenate([per_act_prob, per_act_prob])
+            self.uses_dist.set(p=doubled_prob)
+            all_draws = self.uses_dist.rvs(2 * total_acts)
+            draws_p1 = all_draws[:total_acts]
+            draws_p2 = all_draws[total_acts:]
+
             offsets = np.concatenate([[0], np.cumsum(sub_acts[:-1])])
-            uses[has_acts] = np.add.reduceat(draws.astype(ss_int_), offsets)
+            uses_p1[has_acts] = np.add.reduceat(draws_p1.astype(ss_int_), offsets)
+            uses_p2[has_acts] = np.add.reduceat(draws_p2.astype(ss_int_), offsets)
 
-        # Two-pass dose deduction: p1 first, then p2
-        self._deduct_doses(network, uses, "p1")
-        self._deduct_doses(network, uses, "p2")
+        # Zero uses for partners without doses, then deduct
+        enrollment = self._enrollment
+        p1_agents = np.asarray(network.edges['p1'])
+        p2_agents = np.asarray(network.edges['p2'])
+        p1_has = enrollment.doses[ss.uids(p1_agents)] > 0
+        p2_has = enrollment.doses[ss.uids(p2_agents)] > 0
+        uses_p1[~p1_has] = 0
+        uses_p2[~p2_has] = 0
+        self._deduct_doses(network, uses_p1, "p1")
+        self._deduct_doses(network, uses_p2, "p2")
 
-        self.edge_uses = uses.astype(ss_int_)
+        self.edge_uses_p1 = uses_p1
+        self.edge_uses_p2 = uses_p2
+        self.edge_uses = np.maximum(uses_p1, uses_p2)  # for prior-uses subtraction and analyzer compat
         return
 
-    def relative_risk(self, network, disease_beta, disease, uids=None):
+    def relative_risk(self, network, disease_beta, disease, uids=None, direction=None):
         """Return per-edge relative risk for the given disease."""
         disease_name = disease.name if hasattr(disease, "name") else str(disease)
         return self.rel_risk.get(disease_name, 1.0)
