@@ -50,8 +50,9 @@ import numpy as np
 from scipy.stats import binom
 
 
-def calc_tolerance(db, eff, condom_data, n_acts, n_agents):
-    n_edges = max(1, round(0.33 * n_agents - 8))  # approx steady-state edges for default StructuredSexual
+def calc_tolerance(db, eff, condom_data, n_acts, n_agents=None, n_edges=None):
+    if n_edges is None:
+        n_edges = max(1, round(0.33 * n_agents - 8))  # approx steady-state edges for default StructuredSexual
 
     # reference (blended-rate) net_beta -- this is what the analytical formula gives
     db_blended = db * (1 - condom_data * eff)

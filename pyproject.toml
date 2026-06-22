@@ -10,7 +10,7 @@ license = "MIT"
 description = "Per-act, per-edge intervention framework for starsim/stisim sexual networks"
 dependencies = [
     "starsim>=3.0",
-    "stisim>=1.4",
+    "stisim>=1.5.6",
     "sciris",
     "numpy",
     "pandas",

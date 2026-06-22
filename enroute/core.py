@@ -14,6 +14,22 @@ ss_int_ = ss.dtypes.int
 class EdgeNetwork(ss.SexualNetwork):
     """ss.SexualNetwork with intervention-aware net_beta (stacking formula)."""
 
+    def append(self, edges=None, **kwargs):
+        """Append edges, zero-filling any meta columns the caller omitted.
+
+        EdgeInterventions register extra ``<name>_uses`` columns on the network
+        meta (see EdgeIntervention.init_pre). The network's own ``add_pairs``
+        doesn't know about them, so fill any missing meta keys with zeros to
+        satisfy the base ``Network.append`` contract.
+        """
+        edges = sc.mergedicts(edges, kwargs)
+        for key in self.meta_keys():
+            if key not in edges:
+                some_key = next(iter(edges))
+                n = len(edges[some_key])
+                edges[key] = np.zeros(n, dtype=self.meta[key])
+        super().append(edges)
+
     def init_pre(self, sim):
         super().init_pre(sim)
         self._edge_intvs = []

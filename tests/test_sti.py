@@ -8,6 +8,8 @@ import starsim as ss
 import stisim as sti
 from enroute import EdgeStructuredSexual, StructuredCondomUse
 
+from calc_tolerances import calc_tolerance
+
 
 class NoopCU(StructuredCondomUse):
     """Inert CondomUse that equalizes the RNG object graph for cross-implementation comparison."""
@@ -95,6 +97,17 @@ def _run_pair(diseases, eff_condom, condom_data, n_acts, n_agents, tol, warn_tol
             rel_diff = np.zeros_like(beta_ref)
             rel_diff[nonzero] = abs_diff[nonzero] / beta_ref[nonzero]
 
+            # tol=None means: derive the tolerance from the exact per-act binomial
+            # variance at the *realized* edge count (robust to upstream matcher changes
+            # that alter how many edges form per step). Otherwise use the passed tol.
+            if tol is None:
+                sigma = calc_tolerance(db_edge, eff_condom[name], condom_data, n_acts, n_edges=n_edges)["sigma"]
+                row_tol = 3 * sigma
+                row_warn = 2 * sigma
+            else:
+                row_tol = tol
+                row_warn = warn_tol
+
             all_rows.append(
                 {
                     "name": name,
@@ -103,8 +116,8 @@ def _run_pair(diseases, eff_condom, condom_data, n_acts, n_agents, tol, warn_tol
                     "acts": n_acts,
                     "n_edges": n_edges,
                     "dir": label,
-                    "tol": tol,
-                    "warn_tol": warn_tol,
+                    "tol": row_tol,
+                    "warn_tol": row_warn,
                     "mean_ref": beta_ref.mean(),
                     "mean_edge": beta_edge.mean(),
                     "mean_abs": abs_diff.mean(),
@@ -195,22 +208,24 @@ def test_net_beta_with_condoms():
 def test_net_beta_range():
     sc.heading("Testing net_beta equivalence vs StructuredSexual (parameter sweep)")
 
-    # for tolerances, as p goes away from the edges, the variance grows.
-    # as n_acts grows, ofc variance decreases.
+    # Tolerances are derived per-row from the exact per-act binomial variance at the
+    # realized edge count (tol=None below). This keeps the test self-calibrating: it
+    # tracks however many edges the current stisim matcher forms per step, instead of
+    # hardcoding bounds tied to a particular network's steady-state edge count.
     scenarios = [
-        # (beta_m2f, eff_condom, condom_data, n_acts, tol)
-        (0.005, 1.0, 0.8, 10, 100, 0.38),  # Worst case: all drivers aligned
-        (0.019, 0.9, 0.5, 10, 100, 0.15),  # Typical hard case, no extreme
-        (0.0083, 0.8, 0.8, 100, 100, 0.05),  # n_acts=100 concentrates the binomial
-        (0.05, 1.0, 0.5, 10, 200, 0.11),  # Population size averaging
-        (0.1, 0.9, 0.8, 10, 200, 0.14),  # High db saturation compresses
-        (0.038, 0.46, 0.2, 10, 100, 0.03),  # Low eff * cond → near-deterministic
+        # (beta_m2f, eff_condom, condom_data, n_acts, n_agents)
+        (0.005, 1.0, 0.8, 10, 100),  # Worst case: all drivers aligned
+        (0.019, 0.9, 0.5, 10, 100),  # Typical hard case, no extreme
+        (0.0083, 0.8, 0.8, 100, 100),  # n_acts=100 concentrates the binomial
+        (0.05, 1.0, 0.5, 10, 200),  # Population size averaging
+        (0.1, 0.9, 0.8, 10, 200),  # High db saturation compresses
+        (0.038, 0.46, 0.2, 10, 100),  # Low eff * cond → near-deterministic
     ]
 
     all_rows = []
-    for beta_m2f, eff, condom_data, n_acts, n_agents, tol in scenarios:
+    for beta_m2f, eff, condom_data, n_acts, n_agents in scenarios:
         ng = sti.Gonorrhea(beta_m2f=beta_m2f, rel_beta_f2m=0.5, init_prev=0.05)
-        all_rows.extend(_run_pair([ng], {"ng": eff}, condom_data, n_acts, n_agents, tol, tol / 3 * 2))
+        all_rows.extend(_run_pair([ng], {"ng": eff}, condom_data, n_acts, n_agents, tol=None))
 
     _print_table("Parameter sweep (ng)", all_rows)
 
